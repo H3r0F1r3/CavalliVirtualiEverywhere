@@ -1,7 +1,7 @@
 import express, { Request, Response, RequestHandler } from "express";
-import dotenv from "dotenv";
-import { Document, MongoClient, ObjectId } from "mongodb";
+import { Document, FindCursor, MongoClient, ObjectId, WithId } from "mongodb";
 import { randomInt } from "crypto";
+import dotenv from "dotenv";
 
 dotenv.config();
 const app = express();
@@ -13,6 +13,8 @@ if (!URI) {
   throw new Error("URI not found");
 }
 
+app.use(express.json());
+
 const client = new MongoClient(URI);
 const database = client.db(DBNAME);
 
@@ -20,74 +22,105 @@ app.get("/", (req: Request, res: Response) => {
   res.status(200).send("hello world!");
 });
 
-app.get("/horses", async (req: Request, res: Response) => {
-  let horses: Document[] = [];
-  let cursor = database.collection("horses").find();
-  for await (let horse of cursor) {
-    horses.push(horse);
+app.post("/bet", async (req: Request, res: Response) => {
+  let user = await database
+    .collection("users")
+    .findOne({ _id: new ObjectId(req.body["user"]) });
+  let race = await database
+    .collection("races")
+    .findOne({ _id: new ObjectId(req.body["race"]) });
+
+  if (!user) throw new Error("Invalid user");
+  if (user["balance"] < req.body["amount"])
+    throw new Error("Insufficient funds");
+  if (!race) throw new Error("Invalid race");
+  if (race["winner"] != null) throw new Error("The race has already ended");
+  console.log(race["horses"]);
+  if (!race["horses"].includes(req.body["horse"]))
+    throw new Error("Horse not in race");
+
+  let bet_id: ObjectId = new ObjectId();
+  database
+    .collection("bets")
+    .insertOne({
+      _id: bet_id,
+      user_id: req.body["user"],
+      race_id: req.body["race"],
+      horse_id: req.body["horse"],
+      amount: req.body["amount"],
+    })
+    .then(() => {
+      database
+        .collection("users")
+        .updateOne(
+          { _id: new ObjectId(req.body["user"]) },
+          { $set: { balance: user["balance"] - req.body["amount"] } },
+        );
+      res.redirect("/bets/" + bet_id);
+    });
+});
+
+app.get("/favicon.ico", (req: Request, res: Response) => {
+  res.status(200).send("");
+});
+
+app.get("/:collection", async (req: Request, res: Response) => {
+  let collection = req.params["collection"];
+
+  let data: Document[] = [];
+  if (!["horses", "users", "bets", "races"].includes(collection)) {
+    throw new Error("invalid collection");
   }
-  res.status(200).send(horses);
+  let cursor: FindCursor<WithId<Document>>;
+  if (collection == "users") {
+    cursor = database
+      .collection(collection)
+      .find({ username: { $ne: "admin" } });
+  } else {
+    cursor = database.collection(collection).find();
+  }
+
+  for await (let item of cursor) {
+    data.push(item);
+  }
+
+  res.status(200).send(data);
 });
 
 app.get(
-  "/horses/:id",
+  "/:collection/:id",
   async (req: Request, res: Response, next: RequestHandler) => {
+    let collection = req.params["collection"];
+    if (!["horses", "users", "bets", "races"].includes(collection)) {
+      throw new Error("Invalid collection");
+    }
     let id = req.params["id"];
     if (ObjectId.isValid(id)) {
       res
         .status(200)
         .send(
           await database
-            .collection("horses")
+            .collection(collection)
             .findOne({ _id: new ObjectId(id) }),
         );
     } else {
-      throw new Error("Invalid horse");
+      throw new Error("Invalid ID");
     }
   },
 );
 
-app.get("/users", async (req: Request, res: Response) => {
-  let users: Document[] = [];
-  let cursor = database
-    .collection("users")
-    .find({ username: { $ne: "admin" } });
-  for await (let user of cursor) {
-    users.push(user);
-  }
-  res.status(200).send(users);
-});
-
-app.get(
-  "/users/:id",
-  async (req: Request, res: Response, next: RequestHandler) => {
-    let id = req.params["id"];
-    if (ObjectId.isValid(id)) {
-      res
-        .status(200)
-        .send(
-          await database.collection("users").findOne({ _id: new ObjectId(id) }),
-        );
-    } else {
-      throw new Error("Invalid user");
-    }
-  },
-);
-
-async function distributeWinnings(raceId : ObjectId) {
-
-}
+async function distributeWinnings(raceId: ObjectId) {}
 
 async function startRace() {
   console.log("Race start");
-  let horses: Document[] = [];
+  let horses: String[] = [];
   let date: Date = new Date(Date.now());
   let id: ObjectId = new ObjectId();
   let cursor = database
     .collection("horses")
-    .aggregate([{ $sample: { size: 5 } }]);
-  for await (let horse of cursor) {
-    horses.push(horse["_id"]);
+    .aggregate([{ $sample: { size: 5 } }, { $project: { _id: 1 } }]);
+  for await (let horse_id of cursor) {
+    horses.push(horse_id["_id"].toString());
   }
   database.collection("races").insertOne(
     {
@@ -101,17 +134,13 @@ async function startRace() {
     },
   );
   setTimeout(() => {
-    let winner = horses[randomInt(horses.length)]["_id"];
+    console.log("end race");
+    let winner = horses[randomInt(horses.length)];
     database
       .collection("races")
-      .updateOne(
-        { _id: id },
-        { $set: { winner: winner } },
-      );
-    distributeWinnings(id)}, 30000);
-}
-
-
+      .updateOne({ _id: id }, { $set: { winner: winner } });
+    distributeWinnings(id);
+  }, 30000);
 }
 
 app
