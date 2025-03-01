@@ -26,6 +26,7 @@ app.post("/bet", async (req: Request, res: Response) => {
   let user = await database
     .collection("users")
     .findOne({ _id: new ObjectId(req.body["user"]) });
+
   let race = await database
     .collection("races")
     .findOne({ _id: new ObjectId(req.body["race"]) });
@@ -35,7 +36,6 @@ app.post("/bet", async (req: Request, res: Response) => {
     throw new Error("Insufficient funds");
   if (!race) throw new Error("Invalid race");
   if (race["winner"] != null) throw new Error("The race has already ended");
-  console.log(race["horses"]);
   if (!race["horses"].includes(req.body["horse"]))
     throw new Error("Horse not in race");
 
@@ -54,7 +54,7 @@ app.post("/bet", async (req: Request, res: Response) => {
         .collection("users")
         .updateOne(
           { _id: new ObjectId(req.body["user"]) },
-          { $set: { balance: user["balance"] - req.body["amount"] } },
+          { $inc: { balance: -req.body["amount"] } },
         );
       res.redirect("/bets/" + bet_id);
     });
@@ -109,7 +109,62 @@ app.get(
   },
 );
 
-async function distributeWinnings(raceId: ObjectId) {}
+async function distributeWinnings(race_id: ObjectId) {
+  let race_id_string = race_id.toString();
+
+  let winning_horse = await database
+    .collection("races")
+    .findOne({ _id: race_id });
+  if (!winning_horse) throw new Error("Race not found");
+  winning_horse = winning_horse["winner"];
+
+  let total_data: number = 0,
+    winning_data: number = 0;
+
+  let total_data_cursor = database
+    .collection("bets")
+    .aggregate([
+      { $match: { race_id: race_id_string } },
+      { $group: { _id: null, pot: { $sum: "$amount" } } },
+    ]);
+
+  let winning_data_cursor = database
+    .collection("bets")
+    .aggregate([
+      { $match: { race_id: race_id_string, horse_id: winning_horse } },
+      { $group: { _id: null, pot: { $sum: "$amount" } } },
+    ]);
+
+  for await (let data of total_data_cursor) {
+    total_data = data["pot"];
+  }
+
+  for await (let data of winning_data_cursor) {
+    winning_data = data["pot"];
+  }
+
+  let multiplier = total_data / winning_data;
+
+  let winning_users_cursor = database.collection("bets").aggregate([
+    {
+      $match: { race_id: race_id_string, horse_id: winning_horse },
+    },
+    {
+      $group: {
+        _id: { user_id: "$user_id" },
+        amount: { $sum: "$amount" },
+      },
+    },
+  ]);
+  for await (let data of winning_users_cursor) {
+    database
+      .collection("users")
+      .updateOne(
+        { _id: new ObjectId(data["_id"]["user_id"]) },
+        { $inc: { balance: data["amount"] * multiplier } },
+      );
+  }
+}
 
 async function startRace() {
   console.log("Race start");
