@@ -1,0 +1,38 @@
+/races
+/races/id
+-> 
+{
+ "date" : date
+ "winner" : str
+}
+/races/id/horses
+->
+{
+  [horse_id_1, ...]
+}
+/races/id/participants
+->
+{
+  [usr_id_1, ...]
+}
+/races/id/bets
+->
+{
+  [bet_id_1, ...]
+}
+/users
+/users/id
+->
+{
+ "dateOfBirth" : date
+ "username" : str
+ "balance" : int
+}
+/users/id/
+
+
+/horses
+/horses/id ->
+{
+  "dateOfBirth" : date
+}
