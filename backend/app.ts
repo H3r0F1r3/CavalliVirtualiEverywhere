@@ -2,12 +2,14 @@ import express, { Request, Response, RequestHandler } from "express";
 import { Document, FindCursor, MongoClient, ObjectId, WithId } from "mongodb";
 import { randomInt } from "crypto";
 import dotenv from "dotenv";
+import * as argon2 from "argon2";
 
 dotenv.config();
 const app = express();
 const URI = process.env.URI;
 const DBNAME = process.env.DBNAME;
 const PORT = process.env.PORT || 3000;
+const HOUSE_EDGE = 0;
 
 if (!URI) {
   throw new Error("URI not found");
@@ -23,7 +25,7 @@ const DBBETS = DATABASE.collection("bets");
 const DBRACES = DATABASE.collection("races");
 
 app.get("/", (req: Request, res: Response) => {
-  res.status(200).send("hello world!");
+  res.status(200).send("Hello world!");
 });
 
 app.post("/register", async (req: Request, res: Response) => {
@@ -33,21 +35,27 @@ app.post("/register", async (req: Request, res: Response) => {
   if (password.length < 3) {
     throw new Error("The password is too short");
   }
-  let exists = await DBUSERS.findOne({ username: username });
-  if (exists) {
-    throw new Error("Username already in use");
-  }
 
-  let id = new ObjectId();
-  DBUSERS.insertOne({
-    _id: id,
-    username: username,
-    password: password,
-    role: "user",
-    balance: 100,
-  }).then(() => {
-    res.redirect("users/" + id.toHexString());
-  });
+  let exists = await DBUSERS.findOne({ username: username });
+
+  if (exists) throw new Error("Username already in use");
+
+  try {
+    const hashed_password = await argon2.hash(password);
+
+    let id = new ObjectId();
+    DBUSERS.insertOne({
+      _id: id,
+      username: username,
+      password: hashed_password,
+      role: "user",
+      balance: 100,
+    }).then(() => {
+      res.redirect("users/" + id.toHexString());
+    });
+  } catch (e) {
+    console.log(e);
+  }
 });
 
 app.get("/login", async (req: Request, res: Response) => {});
@@ -163,7 +171,7 @@ async function distributeWinnings(race_id: ObjectId) {
     winning_data = data["pot"];
   }
 
-  let multiplier = total_data / winning_data;
+  let multiplier = (total_data * (1 - HOUSE_EDGE)) / winning_data;
   console.log("Multiplier: " + multiplier);
 
   let winning_users_cursor = DBBETS.aggregate([
